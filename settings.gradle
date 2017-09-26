@@ -13,3 +13,4 @@
 // limitations under the License.
 
 include ':demo', ':library'
+include ':openCVLibrary249'

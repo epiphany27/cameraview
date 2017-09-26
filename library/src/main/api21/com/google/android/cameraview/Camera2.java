@@ -30,12 +30,13 @@ import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.support.annotation.NonNull;
 import android.util.Log;
 import android.util.SparseIntArray;
 import android.view.Surface;
 
-import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Set;
 import java.util.SortedSet;
@@ -65,6 +66,48 @@ class Camera2 extends CameraViewImpl {
 
     private final CameraManager mCameraManager;
 
+    private String mCameraId;
+
+    private CameraCharacteristics mCameraCharacteristics;
+
+    CameraDevice mCamera;
+
+    CameraCaptureSession mCaptureSession;
+
+    CaptureRequest.Builder mPreviewRequestBuilder;
+
+    private ImageReader mPreviewFrameReader;
+    private ImageReader mCapturedImageReader;
+
+    private final SizeMap mPreviewSizes = new SizeMap();
+
+    private final SizeMap mPictureSizes = new SizeMap();
+
+    private int mFacing;
+
+    private AspectRatio mAspectRatio = Constants.DEFAULT_ASPECT_RATIO;
+
+    private boolean mAutoFocus;
+
+    private int mFlash;
+
+    private int mDisplayOrientation;
+
+    /**
+     * An additional thread for running tasks that shouldn't block the UI.
+     */
+    private HandlerThread mCameraPreviewBackgroundThread;
+
+    private HandlerThread mCameraCaptureBackgroundThread;
+
+    /**
+     * A {@link Handler} for running tasks in the background.
+     */
+    private Handler mBackgroundPreviewHandler;
+
+    private Handler mBackgroundCaptureHandler;
+
+
     private final CameraDevice.StateCallback mCameraDeviceCallback
             = new CameraDevice.StateCallback() {
 
@@ -72,12 +115,14 @@ class Camera2 extends CameraViewImpl {
         public void onOpened(@NonNull CameraDevice camera) {
             mCamera = camera;
             mCallback.onCameraOpened();
+            startBackgroundThread();
             startCaptureSession();
         }
 
         @Override
         public void onClosed(@NonNull CameraDevice camera) {
             mCallback.onCameraClosed();
+            stopBackgroundThread();
         }
 
         @Override
@@ -104,9 +149,10 @@ class Camera2 extends CameraViewImpl {
             mCaptureSession = session;
             updateAutoFocus();
             updateFlash();
+            Log.d(TAG, "onConfigured: ");
             try {
                 mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
-                        mCaptureCallback, null);
+                        mCaptureCallback, mBackgroundPreviewHandler);
             } catch (CameraAccessException e) {
                 Log.e(TAG, "Failed to start camera preview because it couldn't access camera", e);
             } catch (IllegalStateException e) {
@@ -136,7 +182,8 @@ class Camera2 extends CameraViewImpl {
                     CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START);
             setState(STATE_PRECAPTURE);
             try {
-                mCaptureSession.capture(mPreviewRequestBuilder.build(), this, null);
+                mCaptureSession.capture(mPreviewRequestBuilder.build(), this,
+                        mBackgroundCaptureHandler);
                 mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                         CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE);
             } catch (CameraAccessException e) {
@@ -151,50 +198,94 @@ class Camera2 extends CameraViewImpl {
 
     };
 
-    private final ImageReader.OnImageAvailableListener mOnImageAvailableListener
+    /**
+     * Starts a background thread and its {@link Handler}.
+     */
+    private void startBackgroundThread() {
+        Log.d(TAG, "startBackgroundThread: ");
+        mCameraPreviewBackgroundThread = new HandlerThread("CameraBackground");
+        mCameraPreviewBackgroundThread.start();
+        mCameraCaptureBackgroundThread = new HandlerThread("CameraCaptureBackground");
+        mCameraCaptureBackgroundThread.start();
+        mBackgroundPreviewHandler = new Handler(mCameraPreviewBackgroundThread.getLooper());
+        mBackgroundCaptureHandler = new Handler(mCameraCaptureBackgroundThread.getLooper());
+        //mImageProcessHandler = new Handler(mBackgroundThread.getLooper());
+    }
+
+    /**
+     * Stops the background thread and its {@link Handler}.
+     */
+    private void stopBackgroundThread() {
+        mCameraPreviewBackgroundThread.quitSafely();
+        mCameraCaptureBackgroundThread.quitSafely();
+        try {
+            mCameraPreviewBackgroundThread.join();
+            mCameraPreviewBackgroundThread = null;
+            mCameraCaptureBackgroundThread.join();
+            mCameraCaptureBackgroundThread = null;
+            mBackgroundPreviewHandler = null;
+            //mImageProcessHandler = null;
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private final ImageReader.OnImageAvailableListener mOnCapturedImageAvailableListener
             = new ImageReader.OnImageAvailableListener() {
 
         @Override
         public void onImageAvailable(ImageReader reader) {
-            try (Image image = reader.acquireNextImage()) {
+
+            Image capturedImage = reader.acquireNextImage();
+            if (capturedImage != null) {
+                capturedImage.close();
+            }
+            /*try (Image image = reader.acquireNextImage()) {
                 Image.Plane[] planes = image.getPlanes();
                 if (planes.length > 0) {
                     ByteBuffer buffer = planes[0].getBuffer();
                     byte[] data = new byte[buffer.remaining()];
                     buffer.get(data);
-                    mCallback.onPictureTaken(data);
+                    //mCallback.onPictureTaken(data);
                 }
-            }
+            }*/
         }
 
     };
 
 
-    private String mCameraId;
+    /**
+     * This a callback object for the {@link ImageReader}. "onImageAvailable" will be called when a
+     * still image is ready to be saved.
+     */
+    private final ImageReader.OnImageAvailableListener mOnPreviewFrameAvailableListener
+            = new ImageReader.OnImageAvailableListener() {
 
-    private CameraCharacteristics mCameraCharacteristics;
+        @Override
+        public void onImageAvailable(ImageReader reader) {
+            //Log.d(TAG, "onImageAvailable: ");
+            Image image = reader.acquireLatestImage();
+            if (image != null) image.close();
+            /*if (image.getFormat() == ImageFormat.JPEG) {
+                image.close();
+                return;
+            }
 
-    CameraDevice mCamera;
+            *//*double imageWidth = image.getWidth();
+            double imageHeight = image.getHeight();
+            Mat yuv = ImageUtils.imageToMat(image);
+            image.close();
+            Mat mat = new Mat(new org.opencv.core.Size(imageWidth, imageHeight),
+                    CvType.CV_8UC3);
+            Imgproc.cvtColor(yuv, mat, Imgproc.COLOR_YUV420p2BGR, 3);
+            yuv.release();
+            image.close();*//*
+            FrameBuffer<Image> frameBuffer = new FrameBuffer<>(image);
+            mCallback.onFramesAvailable(frameBuffer);
+            image.close();*/
+        }
 
-    CameraCaptureSession mCaptureSession;
-
-    CaptureRequest.Builder mPreviewRequestBuilder;
-
-    private ImageReader mImageReader;
-
-    private final SizeMap mPreviewSizes = new SizeMap();
-
-    private final SizeMap mPictureSizes = new SizeMap();
-
-    private int mFacing;
-
-    private AspectRatio mAspectRatio = Constants.DEFAULT_ASPECT_RATIO;
-
-    private boolean mAutoFocus;
-
-    private int mFlash;
-
-    private int mDisplayOrientation;
+    };
 
     Camera2(Callback callback, PreviewImpl preview, Context context) {
         super(callback, preview);
@@ -213,7 +304,8 @@ class Camera2 extends CameraViewImpl {
             return false;
         }
         collectCameraInfo();
-        prepareImageReader();
+        preparePreviewFrameReader();
+        prepareCapturedImageReader();
         startOpeningCamera();
         return true;
     }
@@ -228,9 +320,9 @@ class Camera2 extends CameraViewImpl {
             mCamera.close();
             mCamera = null;
         }
-        if (mImageReader != null) {
-            mImageReader.close();
-            mImageReader = null;
+        if (mPreviewFrameReader != null) {
+            mPreviewFrameReader.close();
+            mPreviewFrameReader = null;
         }
     }
 
@@ -269,7 +361,8 @@ class Camera2 extends CameraViewImpl {
             return false;
         }
         mAspectRatio = ratio;
-        prepareImageReader();
+        preparePreviewFrameReader();
+        prepareCapturedImageReader();
         if (mCaptureSession != null) {
             mCaptureSession.close();
             mCaptureSession = null;
@@ -443,14 +536,31 @@ class Camera2 extends CameraViewImpl {
         }
     }
 
-    private void prepareImageReader() {
-        if (mImageReader != null) {
-            mImageReader.close();
+    private void prepareCapturedImageReader() {
+
+        if (mCapturedImageReader != null) {
+            mCapturedImageReader.close();
         }
+
         Size largest = mPictureSizes.sizes(mAspectRatio).last();
-        mImageReader = ImageReader.newInstance(largest.getWidth(), largest.getHeight(),
+
+        mCapturedImageReader = ImageReader.newInstance(largest.getWidth(), largest.getHeight(),
                 ImageFormat.JPEG, /* maxImages */ 2);
-        mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, null);
+        mCapturedImageReader.setOnImageAvailableListener(mOnCapturedImageAvailableListener,
+                mBackgroundCaptureHandler);
+    }
+
+    private void preparePreviewFrameReader() {
+        if (mPreviewFrameReader != null) {
+            mPreviewFrameReader.close();
+        }
+        Size previewSize = chooseOptimalSize();
+        Log.d(TAG, "preparePreviewFrameReader: previewSize: "+previewSize.getWidth()
+                +" x "+previewSize.getHeight());
+        mPreviewFrameReader = ImageReader.newInstance(previewSize.getWidth(), previewSize.getHeight(),
+                ImageFormat.YUV_420_888, /* maxImages */ 2);
+        mPreviewFrameReader.setOnImageAvailableListener(mOnPreviewFrameAvailableListener,
+                mBackgroundPreviewHandler);
     }
 
     /**
@@ -459,7 +569,7 @@ class Camera2 extends CameraViewImpl {
      */
     private void startOpeningCamera() {
         try {
-            mCameraManager.openCamera(mCameraId, mCameraDeviceCallback, null);
+            mCameraManager.openCamera(mCameraId, mCameraDeviceCallback, mBackgroundPreviewHandler);
         } catch (CameraAccessException e) {
             throw new RuntimeException("Failed to open camera: " + mCameraId, e);
         }
@@ -471,19 +581,34 @@ class Camera2 extends CameraViewImpl {
      * <p>The result will be continuously processed in {@link #mSessionCallback}.</p>
      */
     void startCaptureSession() {
-        if (!isCameraOpened() || !mPreview.isReady() || mImageReader == null) {
+        Log.d(TAG, "startCaptureSession: isCameraOpened: "+isCameraOpened());
+        Log.d(TAG, "startCaptureSession: mPreview.isReady(): "+mPreview.isReady());
+        Log.d(TAG, "startCaptureSession: mPreviewFrameReader: "+mPreviewFrameReader);
+
+        if (!isCameraOpened() || !mPreview.isReady() || mPreviewFrameReader == null) {
             return;
         }
+        Log.d(TAG, "startCaptureSession: ");
         Size previewSize = chooseOptimalSize();
+        //preparePreviewFrameReader(previewSize);
         mPreview.setBufferSize(previewSize.getWidth(), previewSize.getHeight());
         Surface surface = mPreview.getSurface();
-        try {
-            mPreviewRequestBuilder = mCamera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            mPreviewRequestBuilder.addTarget(surface);
-            mCamera.createCaptureSession(Arrays.asList(surface, mImageReader.getSurface()),
-                    mSessionCallback, null);
-        } catch (CameraAccessException e) {
-            throw new RuntimeException("Failed to start camera session");
+        if (mCamera != null) {
+            try {
+                mPreviewRequestBuilder = mCamera.createCaptureRequest(
+                        CameraDevice.TEMPLATE_PREVIEW);
+                mPreviewRequestBuilder.addTarget(mPreviewFrameReader.getSurface());
+                mPreviewRequestBuilder.addTarget(mCapturedImageReader.getSurface());
+                mPreviewRequestBuilder.addTarget(surface);
+                mCamera.createCaptureSession(
+                        Arrays.asList(surface, mPreviewFrameReader.getSurface(),
+                                mCapturedImageReader.getSurface()),
+                        mSessionCallback, null);
+            } catch (CameraAccessException e) {
+                throw new RuntimeException("Failed to start camera session");
+            }
+        } else {
+            Log.e(TAG, "FATAL exception - mCamera is NULL");
         }
     }
 
@@ -584,7 +709,8 @@ class Camera2 extends CameraViewImpl {
                 CaptureRequest.CONTROL_AF_TRIGGER_START);
         try {
             mCaptureCallback.setState(PictureCaptureCallback.STATE_LOCKING);
-            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback, null);
+            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
+                    mBackgroundCaptureHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Failed to lock focus.", e);
         }
@@ -597,7 +723,7 @@ class Camera2 extends CameraViewImpl {
         try {
             CaptureRequest.Builder captureRequestBuilder = mCamera.createCaptureRequest(
                     CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureRequestBuilder.addTarget(mImageReader.getSurface());
+            captureRequestBuilder.addTarget(mPreviewFrameReader.getSurface());
             captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
                     mPreviewRequestBuilder.get(CaptureRequest.CONTROL_AF_MODE));
             switch (mFlash) {
@@ -644,7 +770,7 @@ class Camera2 extends CameraViewImpl {
                                 @NonNull TotalCaptureResult result) {
                             unlockFocus();
                         }
-                    }, null);
+                    }, mBackgroundCaptureHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Cannot capture a still picture.", e);
         }
@@ -658,13 +784,14 @@ class Camera2 extends CameraViewImpl {
         mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
                 CaptureRequest.CONTROL_AF_TRIGGER_CANCEL);
         try {
-            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback, null);
+            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
+                    mBackgroundCaptureHandler);
             updateAutoFocus();
             updateFlash();
             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
                     CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
             mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(), mCaptureCallback,
-                    null);
+                    mBackgroundCaptureHandler);
             mCaptureCallback.setState(PictureCaptureCallback.STATE_PREVIEW);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Failed to restart camera preview.", e);

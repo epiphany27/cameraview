@@ -75,6 +75,7 @@ abstract class CameraViewImpl {
 
         void onCameraClosed();
 
+        void onFramesAvailable(FrameBuffer inputFrame);
         void onPictureTaken(byte[] data);
 
     }

@@ -17,6 +17,7 @@
 package com.google.android.cameraview;
 
 import android.annotation.SuppressLint;
+import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.Camera;
 import android.os.Build;
@@ -31,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 
 @SuppressWarnings("deprecation")
-class Camera1 extends CameraViewImpl {
+class Camera1 extends CameraViewImpl implements Camera.PreviewCallback{
 
     private static final int INVALID_CAMERA_ID = -1;
 
@@ -70,6 +71,12 @@ class Camera1 extends CameraViewImpl {
     private int mFlash;
 
     private int mDisplayOrientation;
+
+    /** Callback buffer related **/
+    int mBufferSize;
+    private byte[] mCallbackBuffer;
+
+    Size mSize;
 
     Camera1(Callback callback, PreviewImpl preview) {
         super(callback, preview);
@@ -114,6 +121,12 @@ class Camera1 extends CameraViewImpl {
                 if (needsToStopPreview) {
                     mCamera.stopPreview();
                 }
+                mCamera.setPreviewCallbackWithBuffer(this);
+                mBufferSize = mSize.getWidth() * mSize.getHeight() *
+                        ImageFormat.getBitsPerPixel(mCamera.getParameters().getPreviewFormat()) / 8;
+
+                mCallbackBuffer = new byte[mBufferSize];
+                mCamera.addCallbackBuffer(mCallbackBuffer);
                 mCamera.setPreviewDisplay(mPreview.getSurfaceHolder());
                 if (needsToStopPreview) {
                     mCamera.startPreview();
@@ -327,7 +340,7 @@ class Camera1 extends CameraViewImpl {
             sizes = mPreviewSizes.sizes(mAspectRatio);
         }
         Size size = chooseOptimalSize(sizes);
-
+        mSize = size;
         // Always re-apply camera parameters
         // Largest picture size in this ratio
         final Size pictureSize = mPictureSizes.sizes(mAspectRatio).last();
@@ -477,4 +490,10 @@ class Camera1 extends CameraViewImpl {
         }
     }
 
+    @Override
+    public void onPreviewFrame(byte[] data, Camera camera) {
+        FrameBuffer<byte[]> frameBuffer = new FrameBuffer<>(data);
+        //mCallback.onFramesAvailable(ImageUtils.bytesToMat(data, camera));
+        mCallback.onFramesAvailable(frameBuffer);
+    }
 }

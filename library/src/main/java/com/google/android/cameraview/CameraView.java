@@ -38,6 +38,7 @@ import java.util.Set;
 
 public class CameraView extends FrameLayout {
 
+    private static final String TAG = CameraView.class.getSimpleName();
     /** The camera device faces the opposite direction as the device's screen. */
     public static final int FACING_BACK = Constants.FACING_BACK;
 
@@ -440,6 +441,11 @@ public class CameraView extends FrameLayout {
             for (Callback callback : mCallbacks) {
                 callback.onCameraClosed(CameraView.this);
             }
+        }
+
+        @Override
+        public void onFramesAvailable(FrameBuffer inputFrame) {
+            //Log.d(TAG, "onFramesAvailable: inputMat: "+inputFrame.getPreviewFrames());
         }
 
         @Override
