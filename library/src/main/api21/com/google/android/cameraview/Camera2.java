@@ -326,7 +326,7 @@ class Camera2 extends CameraViewImpl {
         public void onImageAvailable(ImageReader reader) {
             //Log.d(TAG, "onImageAvailable: ");
             Image image = reader.acquireLatestImage();
-            if (image != null) image.close();
+            if (image == null) return;
             /*if (image.getFormat() == ImageFormat.JPEG) {
                 image.close();
                 return;
@@ -341,9 +341,9 @@ class Camera2 extends CameraViewImpl {
             Imgproc.cvtColor(yuv, mat, Imgproc.COLOR_YUV420p2BGR, 3);
             yuv.release();
             image.close();*/
-            /*FrameBuffer<Image> frameBuffer = new FrameBuffer<>(image);
+            FrameBuffer<Image> frameBuffer = new FrameBuffer<>(image);
             mCallback.onFramesAvailable(frameBuffer);
-            image.close();*/
+            image.close();
         }
 
     };
@@ -584,7 +584,9 @@ class Camera2 extends CameraViewImpl {
         for (android.util.Size size : map.getOutputSizes(mPreview.getOutputClass())) {
             int width = size.getWidth();
             int height = size.getHeight();
+            Log.d(TAG, "collectCameraInfo: wxh: "+width+" x "+height);
             if (width <= MAX_PREVIEW_WIDTH && height <= MAX_PREVIEW_HEIGHT) {
+                Log.d(TAG, "added: wxh: "+width+" x "+height);
                 mPreviewSizes.add(new Size(width, height));
             }
         }
@@ -626,6 +628,8 @@ class Camera2 extends CameraViewImpl {
             mPreviewFrameReader.close();
         }
         Size previewSize = chooseOptimalSize();
+        Log.d(TAG, "preparePreviewFrameReader: previewSize: "
+                +previewSize.getWidth()+" x "+previewSize.getHeight());
         mPreviewFrameReader = ImageReader.newInstance(previewSize.getWidth(), previewSize.getHeight(),
                 ImageFormat.YUV_420_888, /* maxImages */ 6);
         mPreviewFrameReader.setOnImageAvailableListener(mOnPreviewFrameAvailableListener,
@@ -650,16 +654,14 @@ class Camera2 extends CameraViewImpl {
      * <p>The result will be continuously processed in {@link #mSessionCallback}.</p>
      */
     void startCaptureSession() {
-        Log.d(TAG, "startCaptureSession: isCameraOpened: "+isCameraOpened());
-        Log.d(TAG, "startCaptureSession: mPreview.isReady(): "+mPreview.isReady());
-        Log.d(TAG, "startCaptureSession: mPreviewFrameReader: "+mPreviewFrameReader);
-
         if (!isCameraOpened() || !mPreview.isReady() || mPreviewFrameReader == null) {
             return;
         }
         Log.d(TAG, "startCaptureSession: ");
         Size previewSize = chooseOptimalSize();
         //preparePreviewFrameReader(previewSize);
+        Log.d(TAG, "startCaptureSession: previewSize:"
+                +previewSize.getWidth()+" x "+previewSize.getHeight());
         mPreview.setBufferSize(previewSize.getWidth(), previewSize.getHeight());
         Surface surface = mPreview.getSurface();
         if (mCamera != null) {

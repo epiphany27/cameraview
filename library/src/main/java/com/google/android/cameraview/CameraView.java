@@ -19,12 +19,14 @@ package com.google.android.cameraview;
 import android.app.Activity;
 import android.content.Context;
 import android.content.res.TypedArray;
+import android.media.Image;
 import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.support.annotation.IntDef;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
+import android.support.annotation.RequiresApi;
 import android.support.v4.os.ParcelableCompat;
 import android.support.v4.os.ParcelableCompatCreatorCallbacks;
 import android.support.v4.view.ViewCompat;
@@ -444,9 +446,16 @@ public class CameraView extends FrameLayout {
             }
         }
 
+        @RequiresApi(api = Build.VERSION_CODES.KITKAT)
         @Override
         public void onFramesAvailable(FrameBuffer inputFrame) {
             //Log.d(TAG, "onFramesAvailable: inputMat: "+inputFrame.getPreviewFrames());
+            //Log.d(TAG, "onFramesAvailable: "+inputFrame.getPreviewFrames().getClass());
+            //Image image = (Image) inputFrame.getPreviewFrames();
+
+            FrameBuffer<Image> inputFrame2 = inputFrame;
+            Image image = inputFrame2.getPreviewFrames();
+            Log.d(TAG, "onFramesAvailable: size: "+image.getWidth()+" x "+image.getHeight());
         }
 
         @Override
