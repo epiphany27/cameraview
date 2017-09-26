@@ -37,6 +37,7 @@ import android.util.Log;
 import android.util.SparseIntArray;
 import android.view.Surface;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Set;
 import java.util.SortedSet;
@@ -76,6 +77,8 @@ class Camera2 extends CameraViewImpl {
 
     CaptureRequest.Builder mPreviewRequestBuilder;
 
+    CaptureRequest.Builder captureRequestBuilder;
+
     private ImageReader mPreviewFrameReader;
     private ImageReader mCapturedImageReader;
 
@@ -107,6 +110,7 @@ class Camera2 extends CameraViewImpl {
 
     private Handler mBackgroundCaptureHandler;
 
+    private boolean mTakePictureCalled;
 
     private final CameraDevice.StateCallback mCameraDeviceCallback
             = new CameraDevice.StateCallback() {
@@ -174,17 +178,60 @@ class Camera2 extends CameraViewImpl {
 
     };
 
+    private final CameraCaptureSession.StateCallback mCaptureSessionCallback
+            = new CameraCaptureSession.StateCallback() {
+
+        @Override
+        public void onConfigured(@NonNull CameraCaptureSession session) {
+            if (mCamera == null) {
+                return;
+            }
+            mCaptureSession = session;
+            /*updateAutoFocus();
+            updateFlash();*/
+            Log.d(TAG, "onConfigured: ");
+            try {
+                mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(),
+                        mCaptureCallback, mBackgroundPreviewHandler);
+
+                if (mAutoFocus) {
+                    lockFocus();
+                } else {
+                    captureStillPicture();
+                }
+            } catch (CameraAccessException e) {
+                Log.e(TAG, "Failed to start camera preview because it couldn't access camera", e);
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Failed to start camera preview.", e);
+            }
+        }
+
+        @Override
+        public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+            Log.e(TAG, "Failed to configure capture session.");
+        }
+
+        @Override
+        public void onClosed(@NonNull CameraCaptureSession session) {
+            if (mCaptureSession != null && mCaptureSession.equals(session)) {
+                mCaptureSession = null;
+            }
+        }
+
+    };
+
     PictureCaptureCallback mCaptureCallback = new PictureCaptureCallback() {
 
         @Override
         public void onPrecaptureRequired() {
-            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+            Log.d(TAG, "mCaptureCallback onPrecaptureRequired: ");
+            captureRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                     CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START);
             setState(STATE_PRECAPTURE);
             try {
-                mCaptureSession.capture(mPreviewRequestBuilder.build(), this,
+                mCaptureSession.capture(captureRequestBuilder.build(), this,
                         mBackgroundCaptureHandler);
-                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                captureRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                         CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE);
             } catch (CameraAccessException e) {
                 Log.e(TAG, "Failed to run precapture sequence.", e);
@@ -193,6 +240,7 @@ class Camera2 extends CameraViewImpl {
 
         @Override
         public void onReady() {
+            Log.d(TAG, "mCaptureCallback onReady: ");
             captureStillPicture();
         }
 
@@ -235,9 +283,22 @@ class Camera2 extends CameraViewImpl {
 
         @Override
         public void onImageAvailable(ImageReader reader) {
-
+            Log.d(TAG, "onCaptured onImageAvailable: ");
             Image capturedImage = reader.acquireLatestImage();
-            if (capturedImage != null) {
+            if (capturedImage == null) return;
+            if (!mTakePictureCalled) {
+                Image.Plane[] planes = capturedImage.getPlanes();
+                if (planes.length > 0) {
+                    mTakePictureCalled = true;
+                    ByteBuffer buffer = planes[0].getBuffer();
+                    byte[] data = new byte[buffer.remaining()];
+                    buffer.get(data);
+                    capturedImage.close();
+                    mCallback.onPictureTaken(data);
+                } else {
+                    capturedImage.close();
+                }
+            } else {
                 capturedImage.close();
             }
             /*try (Image image = reader.acquireNextImage()) {
@@ -305,7 +366,7 @@ class Camera2 extends CameraViewImpl {
         }
         collectCameraInfo();
         preparePreviewFrameReader();
-        //prepareCapturedImageReader();
+        prepareCapturedImageReader();
         startOpeningCamera();
         return true;
     }
@@ -362,7 +423,7 @@ class Camera2 extends CameraViewImpl {
         }
         mAspectRatio = ratio;
         preparePreviewFrameReader();
-        //prepareCapturedImageReader();
+        prepareCapturedImageReader();
         if (mCaptureSession != null) {
             mCaptureSession.close();
             mCaptureSession = null;
@@ -427,11 +488,21 @@ class Camera2 extends CameraViewImpl {
 
     @Override
     void takePicture() {
-        if (mAutoFocus) {
-            lockFocus();
-        } else {
-            captureStillPicture();
+        Log.d(TAG, "takePicture: ");
+        try {
+            captureRequestBuilder = mCamera.createCaptureRequest(
+                    CameraDevice.TEMPLATE_STILL_CAPTURE);
+            captureRequestBuilder.addTarget(mCapturedImageReader.getSurface());
+            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
+                    mPreviewRequestBuilder.get(CaptureRequest.CONTROL_AF_MODE));
+            mCamera.createCaptureSession(
+                    Arrays.asList(mCapturedImageReader.getSurface()/*,
+                                mCapturedImageReader.getSurface()*/),
+                    mCaptureSessionCallback, null);
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
         }
+
     }
 
     @Override
@@ -703,11 +774,11 @@ class Camera2 extends CameraViewImpl {
      * Locks the focus as the first step for a still image capture.
      */
     private void lockFocus() {
-        mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+        captureRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
                 CaptureRequest.CONTROL_AF_TRIGGER_START);
         try {
             mCaptureCallback.setState(PictureCaptureCallback.STATE_LOCKING);
-            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
+            mCaptureSession.capture(captureRequestBuilder.build(), mCaptureCallback,
                     mBackgroundCaptureHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Failed to lock focus.", e);
@@ -718,12 +789,9 @@ class Camera2 extends CameraViewImpl {
      * Captures a still picture.
      */
     void captureStillPicture() {
+        Log.d(TAG, "captureStillPicture: ");
         try {
-            CaptureRequest.Builder captureRequestBuilder = mCamera.createCaptureRequest(
-                    CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureRequestBuilder.addTarget(mPreviewFrameReader.getSurface());
-            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
-                    mPreviewRequestBuilder.get(CaptureRequest.CONTROL_AF_MODE));
+
             switch (mFlash) {
                 case Constants.FLASH_OFF:
                     captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE,
@@ -779,7 +847,7 @@ class Camera2 extends CameraViewImpl {
      * capturing a still picture.
      */
     void unlockFocus() {
-        mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+        /*captureRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
                 CaptureRequest.CONTROL_AF_TRIGGER_CANCEL);
         try {
             mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
@@ -793,7 +861,8 @@ class Camera2 extends CameraViewImpl {
             mCaptureCallback.setState(PictureCaptureCallback.STATE_PREVIEW);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Failed to restart camera preview.", e);
-        }
+        }*/
+        stop();
     }
 
     /**
