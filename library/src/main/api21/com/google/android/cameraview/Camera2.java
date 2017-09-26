@@ -265,13 +265,13 @@ class Camera2 extends CameraViewImpl {
         public void onImageAvailable(ImageReader reader) {
             //Log.d(TAG, "onImageAvailable: ");
             Image image = reader.acquireLatestImage();
-            if (image != null) image.close();
-            /*if (image.getFormat() == ImageFormat.JPEG) {
+            if (image == null) return;
+            if (image.getFormat() == ImageFormat.JPEG) {
                 image.close();
                 return;
             }
 
-            *//*double imageWidth = image.getWidth();
+            /*double imageWidth = image.getWidth();
             double imageHeight = image.getHeight();
             Mat yuv = ImageUtils.imageToMat(image);
             image.close();
@@ -279,10 +279,10 @@ class Camera2 extends CameraViewImpl {
                     CvType.CV_8UC3);
             Imgproc.cvtColor(yuv, mat, Imgproc.COLOR_YUV420p2BGR, 3);
             yuv.release();
-            image.close();*//*
+            image.close();*/
             FrameBuffer<Image> frameBuffer = new FrameBuffer<>(image);
             mCallback.onFramesAvailable(frameBuffer);
-            image.close();*/
+            image.close();
         }
 
     };
@@ -555,10 +555,8 @@ class Camera2 extends CameraViewImpl {
             mPreviewFrameReader.close();
         }
         Size previewSize = chooseOptimalSize();
-        Log.d(TAG, "preparePreviewFrameReader: previewSize: "+previewSize.getWidth()
-                +" x "+previewSize.getHeight());
         mPreviewFrameReader = ImageReader.newInstance(previewSize.getWidth(), previewSize.getHeight(),
-                ImageFormat.YUV_420_888, /* maxImages */ 2);
+                ImageFormat.YUV_420_888, /* maxImages */ 6);
         mPreviewFrameReader.setOnImageAvailableListener(mOnPreviewFrameAvailableListener,
                 mBackgroundPreviewHandler);
     }
